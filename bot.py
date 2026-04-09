@@ -71,7 +71,7 @@ async def new_ticket(message: types.Message, state: FSMContext):
     await message.answer("Выберите категорию:", reply_markup=category_kb)
     await state.set_state(Ticket.category)
 
-@dp.message(Ticket.category)
+@dp.message(Ticket.category, F.text.in_(["💻 Софт", "🖥 Железо", "❓ Другое"]))
 async def category(message: types.Message, state: FSMContext):
     await state.update_data(category=message.text)
     await message.answer("Опишите проблему (можно с фото):")
