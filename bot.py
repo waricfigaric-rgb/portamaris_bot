@@ -1,21 +1,26 @@
 import asyncio
+import os
 from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart, Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import CommandStart
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 
-TOKEN = "PASTE_YOUR_TOKEN_HERE"
-ADMIN_ID = 123456789  # замени на свой ID
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# ===== "БАЗА" В ПАМЯТИ =====
+tickets = []
+ticket_counter = 1
+
 # ===== КНОПКИ =====
 kb = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🛠 Создать тикет")],
-        [KeyboardButton(text="ℹ️ Помощь")]
+        [KeyboardButton(text="🛠 Новый тикет")],
+        [KeyboardButton(text="📋 Мои тикеты")]
     ],
     resize_keyboard=True
 )
@@ -26,58 +31,114 @@ class Ticket(StatesGroup):
     description = State()
     priority = State()
 
-ticket_counter = 1
-
 # ===== СТАРТ =====
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    await message.answer("Добро пожаловать! Выберите действие:", reply_markup=kb)
+    await message.answer("Helpdesk бот запущен", reply_markup=kb)
 
 # ===== СОЗДАНИЕ ТИКЕТА =====
-@dp.message(F.text == "🛠 Создать тикет")
-async def create_ticket(message: types.Message, state: FSMContext):
-    await message.answer("Выбери категорию:\nПК / Интернет / Принтер")
+@dp.message(F.text == "🛠 Новый тикет")
+async def new_ticket(message: types.Message, state: FSMContext):
+    await message.answer("Категория: ПК / Интернет / Принтер")
     await state.set_state(Ticket.category)
 
 @dp.message(Ticket.category)
-async def set_category(message: types.Message, state: FSMContext):
+async def category(message: types.Message, state: FSMContext):
     await state.update_data(category=message.text)
-    await message.answer("Опиши проблему:")
+    await message.answer("Опишите проблему:")
     await state.set_state(Ticket.description)
 
 @dp.message(Ticket.description)
-async def set_description(message: types.Message, state: FSMContext):
+async def description(message: types.Message, state: FSMContext):
     await state.update_data(description=message.text)
-    await message.answer("Срочность: 🔴 Срочно / 🟡 Средне / 🟢 Не срочно")
+    await message.answer("Приоритет: 🔴 / 🟡 / 🟢")
     await state.set_state(Ticket.priority)
 
 @dp.message(Ticket.priority)
-async def finish_ticket(message: types.Message, state: FSMContext):
+async def finish(message: types.Message, state: FSMContext):
     global ticket_counter
 
     data = await state.get_data()
 
+    ticket = {
+        "id": ticket_counter,
+        "user_id": message.from_user.id,
+        "name": message.from_user.full_name,
+        "category": data["category"],
+        "description": data["description"],
+        "priority": message.text,
+        "status": "open"
+    }
+
+    tickets.append(ticket)
+
     text = f"""
 📩 ТИКЕТ #{ticket_counter}
 
-👤 {message.from_user.full_name}
-🆔 {message.from_user.id}
-
-📂 Категория: {data['category']}
-📝 Описание: {data['description']}
-⚡ Приоритет: {message.text}
+👤 {ticket['name']}
+📂 {ticket['category']}
+📝 {ticket['description']}
+⚡ {ticket['priority']}
 """
 
     await bot.send_message(ADMIN_ID, text)
-    await message.answer(f"✅ Тикет #{ticket_counter} создан!")
+    await message.answer(f"✅ Тикет #{ticket_counter} создан")
 
     ticket_counter += 1
     await state.clear()
 
-# ===== ПОМОЩЬ =====
-@dp.message(F.text == "ℹ️ Помощь")
-async def help_cmd(message: types.Message):
-    await message.answer("Напишите заявку через кнопку 'Создать тикет'")
+# ===== МОИ ТИКЕТЫ =====
+@dp.message(F.text == "📋 Мои тикеты")
+async def my_tickets(message: types.Message):
+    user_tickets = [t for t in tickets if t["user_id"] == message.from_user.id and t["status"] == "open"]
+
+    if not user_tickets:
+        await message.answer("У вас нет открытых тикетов")
+        return
+
+    text = "📋 Ваши тикеты:\n"
+    for t in user_tickets:
+        text += f"\n#{t['id']} | {t['category']} | {t['priority']}"
+
+    await message.answer(text)
+
+# ===== АДМИН: ВСЕ ТИКЕТЫ =====
+@dp.message(Command("all"))
+async def all_tickets(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    open_tickets = [t for t in tickets if t["status"] == "open"]
+
+    if not open_tickets:
+        await message.answer("Нет открытых тикетов")
+        return
+
+    text = "📋 Все тикеты:\n"
+    for t in open_tickets:
+        text += f"\n#{t['id']} | {t['name']} | {t['category']} | {t['priority']}"
+
+    await message.answer(text)
+
+# ===== АДМИН: ЗАКРЫТЬ =====
+@dp.message(Command("close"))
+async def close(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    try:
+        ticket_id = int(message.text.split()[1])
+
+        for t in tickets:
+            if t["id"] == ticket_id:
+                t["status"] = "closed"
+                await message.answer(f"✅ Тикет #{ticket_id} закрыт")
+                return
+
+        await message.answer("Тикет не найден")
+
+    except:
+        await message.answer("Используй: /close 1")
 
 # ===== ЗАПУСК =====
 async def main():
