@@ -14,10 +14,11 @@ dp = Dispatcher()
 
 # ===== "БАЗА" В ПАМЯТИ =====
 tickets = []
+users = {}  # user_id: name
 ticket_counter = 1
 
 # ===== КНОПКИ =====
-kb = ReplyKeyboardMarkup(
+main_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🛠 Новый тикет")],
         [KeyboardButton(text="📋 Мои тикеты")]
@@ -25,35 +26,72 @@ kb = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+category_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="💻 Софт"), KeyboardButton(text="🖥 Железо")],
+        [KeyboardButton(text="❓ Другое")]
+    ],
+    resize_keyboard=True
+)
+
+priority_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🔴 Высокий")],
+        [KeyboardButton(text="🟡 Средний")],
+        [KeyboardButton(text="🟢 Низкий")]
+    ],
+    resize_keyboard=True
+)
+
 # ===== СОСТОЯНИЯ =====
 class Ticket(StatesGroup):
+    name = State()
     category = State()
     description = State()
     priority = State()
 
 # ===== СТАРТ =====
 @dp.message(CommandStart())
-async def start(message: types.Message):
-    await message.answer("Helpdesk бот запущен", reply_markup=kb)
+async def start(message: types.Message, state: FSMContext):
+    if message.from_user.id not in users:
+        await message.answer("👋 Как вас зовут?")
+        await state.set_state(Ticket.name)
+    else:
+        await message.answer("Бот готов к работе", reply_markup=main_kb)
+
+@dp.message(Ticket.name)
+async def get_name(message: types.Message, state: FSMContext):
+    users[message.from_user.id] = message.text
+    await message.answer("✅ Сохранено!", reply_markup=main_kb)
+    await state.clear()
 
 # ===== СОЗДАНИЕ ТИКЕТА =====
 @dp.message(F.text == "🛠 Новый тикет")
 async def new_ticket(message: types.Message, state: FSMContext):
-    await message.answer("Категория: ПК / Интернет / Принтер")
+    await message.answer("Выберите категорию:", reply_markup=category_kb)
     await state.set_state(Ticket.category)
 
 @dp.message(Ticket.category)
 async def category(message: types.Message, state: FSMContext):
     await state.update_data(category=message.text)
-    await message.answer("Опишите проблему:")
+    await message.answer("Опишите проблему (можно с фото):")
     await state.set_state(Ticket.description)
 
+# ===== ОПИСАНИЕ (ТЕКСТ + ФОТО) =====
 @dp.message(Ticket.description)
 async def description(message: types.Message, state: FSMContext):
-    await state.update_data(description=message.text)
-    await message.answer("Приоритет: 🔴 / 🟡 / 🟢")
+    text = message.text if message.text else ""
+
+    photo_id = None
+    if message.photo:
+        photo_id = message.photo[-1].file_id
+
+    await state.update_data(description=text, photo=photo_id)
+
+    await message.answer("Выберите приоритет:", reply_markup=priority_kb)
     await state.set_state(Ticket.priority)
 
+# ===== ФИНИШ =====
 @dp.message(Ticket.priority)
 async def finish(message: types.Message, state: FSMContext):
     global ticket_counter
@@ -63,9 +101,10 @@ async def finish(message: types.Message, state: FSMContext):
     ticket = {
         "id": ticket_counter,
         "user_id": message.from_user.id,
-        "name": message.from_user.full_name,
+        "name": users.get(message.from_user.id, "Неизвестно"),
         "category": data["category"],
         "description": data["description"],
+        "photo": data.get("photo"),
         "priority": message.text,
         "status": "open"
     }
@@ -81,8 +120,13 @@ async def finish(message: types.Message, state: FSMContext):
 ⚡ {ticket['priority']}
 """
 
-    await bot.send_message(ADMIN_ID, text)
-    await message.answer(f"✅ Тикет #{ticket_counter} создан")
+    # отправка админу
+    if ticket["photo"]:
+        await bot.send_photo(ADMIN_ID, ticket["photo"], caption=text)
+    else:
+        await bot.send_message(ADMIN_ID, text)
+
+    await message.answer(f"✅ Тикет #{ticket_counter} создан", reply_markup=main_kb)
 
     ticket_counter += 1
     await state.clear()
